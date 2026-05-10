@@ -10,13 +10,16 @@ from telegram.ext import (
 from telegram.error import BadRequest
 from flask import Flask
 
+# 📝 LOGGING
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
+# 🔐 TOKEN
 TOKEN = os.getenv("BOT_TOKEN")
 
+# 🎙️ QORILAR
 RECITERS = {
     "alafasy": {
         "name": "Mishary Alafasy",
@@ -28,8 +31,9 @@ RECITERS = {
     }
 }
 
+# 📖 114 SURA MA'LUMOTLARI
 SURAHS = [
-    None,
+    None,  # 0-index bo'sh
     {"name_uz": "Al-Fotiha", "name_ar": "الفاتحة", "name_en": "Al-Fatihah", "ayahs": 7, "place": "Makka"},
     {"name_uz": "Al-Baqara", "name_ar": "البقرة", "name_en": "Al-Baqarah", "ayahs": 286, "place": "Madina"},
     {"name_uz": "Ali-Imron", "name_ar": "آل عمران", "name_en": "Aal-E-Imran", "ayahs": 200, "place": "Madina"},
@@ -146,13 +150,18 @@ SURAHS = [
     {"name_uz": "An-Nas", "name_ar": "الناس", "name_en": "An-Nas", "ayahs": 6, "place": "Madina"},
 ]
 
+# 🔍 SURA TOPISH (raqam YOKI nom orqali)
 def find_surah(query):
     query = query.strip().lower()
+
+    # Raqam orqali
     if query.isdigit():
         num = int(query)
         if 1 <= num <= 114:
             return num, SURAHS[num]
         return None, None
+
+    # Nom orqali
     for i in range(1, 115):
         s = SURAHS[i]
         names = [
@@ -167,6 +176,7 @@ def find_surah(query):
                 return i, s
     return None, None
 
+# 👋 SALOMLASHISH MATNI
 WELCOME_TEXT = (
     "🕌 *Assalomu alaykum!*\n\n"
     "Bu bot Qur'oni Karim suralarini ovoz bilan yuboradi.\n\n"
@@ -177,18 +187,26 @@ WELCOME_TEXT = (
     "• `1` yoki `Al-Fotiha`"
 )
 
+# 🏠 START (yoki istalgan birinchi xabar)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(WELCOME_TEXT, parse_mode="Markdown")
 
+# 📩 XABAR HANDLERI
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
+
     text = update.message.text.strip()
+
+    # Salom yoki tushunarsiz so'zlarga salomlashish bilan javob
     greetings = ["salom", "assalom", "hi", "hello", "menu", "start", "boshla", "help", "yordam"]
     if text.lower() in greetings:
         await update.message.reply_text(WELCOME_TEXT, parse_mode="Markdown")
         return
+
+    # Sura topish
     surah_num, surah = find_surah(text)
+
     if not surah:
         await update.message.reply_text(
             "❌ *Sura topilmadi*\n\n"
@@ -197,44 +215,56 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         return
+
+    # Qori tanlash tugmalarini ko'rsatish
     keyboard = [
         [InlineKeyboardButton("🎙️ Mishary Alafasy", callback_data=f"play_alafasy_{surah_num}")],
         [InlineKeyboardButton("🎙️ Yasser Al-Dosari", callback_data=f"play_dosari_{surah_num}")]
     ]
+
     info_text = (
         f"📖 *{surah_num}. {surah['name_uz']}*\n"
         f"🕋 {surah['name_ar']}\n\n"
         f"📊 Oyatlar: {surah['ayahs']} | Joyi: {surah['place']}\n\n"
         f"👇 *Qori tanlang:*"
     )
+
     await update.message.reply_text(
         info_text,
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
 
+# 🎙️ QORI TUGMA BOSILGANDA — AUDIO YUBORISH
 async def play_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
         await query.answer("⏳ Yuborilmoqda...")
     except BadRequest:
         return
+
+    # callback_data: "play_alafasy_36" -> ["play", "alafasy", "36"]
     parts = query.data.split("_")
     if len(parts) != 3:
         return
+
     reciter_key = parts[1]
     surah_num = int(parts[2])
+
     if reciter_key not in RECITERS or not (1 <= surah_num <= 114):
         return
+
     reciter = RECITERS[reciter_key]
     surah = SURAHS[surah_num]
     audio_url = reciter["url"].format(surah_num)
+
     caption = (
         f"📖 *{surah_num}. {surah['name_uz']}*\n"
         f"🕋 {surah['name_ar']}\n\n"
         f"📊 Oyatlar: {surah['ayahs']} | Joyi: {surah['place']}\n"
         f"🎙️ Qori: {reciter['name']}"
     )
+
     try:
         await query.message.reply_audio(
             audio=audio_url,
@@ -249,5 +279,42 @@ async def play_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Audio yuborishda xato yuz berdi. Iltimos, qayta urining."
         )
 
+# 🛡️ XATO HANDLER
 async def error_handler(update, context):
-    logging.error(f"Xato: {context
+    logging.error(f"Xato: {context.error}")
+
+# =========================
+# 🌐 FLASK
+# =========================
+app_web = Flask(__name__)
+
+@app_web.route("/")
+def home():
+    return "Quran Bot ishlayapti ✅"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app_web.run(host="0.0.0.0", port=port)
+
+# =========================
+# 🤖 ASOSIY
+# =========================
+def main():
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    except Exception:
+        pass
+
+    Thread(target=run_web, daemon=True).start()
+
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(play_callback, pattern="^play_"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_error_handler(error_handler)
+
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
