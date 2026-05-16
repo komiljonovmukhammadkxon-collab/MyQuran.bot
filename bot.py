@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import urllib.request
+import json
 from threading import Thread
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -17,9 +18,27 @@ logging.basicConfig(
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = 7939280627  # <-- BU YERGA O'Z ID'INGIZNI YOZING
 
-# Telegram URL orqali audio chegarasi - 20 MB
-MAX_AUDIO_SIZE = 19 * 1024 * 1024  # 19 MB xavfsiz chegara
+MAX_AUDIO_SIZE = 19 * 1024 * 1024
+
+# File ID'lar shu yerda saqlanadi
+FILE_IDS_PATH = "file_ids.json"
+
+def load_file_ids():
+    if os.path.exists(FILE_IDS_PATH):
+        with open(FILE_IDS_PATH, "r") as f:
+            return json.load(f)
+    return {"alafasy": {}, "dosari": {}}
+
+def save_file_ids(data):
+    with open(FILE_IDS_PATH, "w") as f:
+        json.dump(data, f, indent=2)
+
+FILE_IDS = load_file_ids()
+
+# Hozir admin qaysi qori uchun yuklayotganini eslaydi
+ADMIN_STATE = {"reciter": None, "surah": None}
 
 RECITERS = {
     "alafasy": {
@@ -172,7 +191,6 @@ def find_surah(query):
     return None, None
 
 def get_file_size(url):
-    """Audio fayl o'lchamini tekshirish (HEAD request)"""
     try:
         req = urllib.request.Request(url, method='HEAD')
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -184,12 +202,91 @@ def get_file_size(url):
 WELCOME_TEXT = (
     "🕌 *Assalomu alaykum!*\n\n"
     "Bu bot Qur'oni Karim suralarini ovoz bilan yuboradi.\n\n"
-    "📖 *Sura raqami yoki nomini yozing:*\n\n"
-    "Masalan:\n"
-    "• `36` yoki `Yasin`\n"
-    "• `112` yoki `Al-Ixlos`\n"
-    "• `1` yoki `Al-Fotiha`"
+    "📖 *Sura raqami yoki nomini yozing:*"
 )
+
+# ============ ADMIN FUNKSIYALARI ============
+
+async def admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin /upload alafasy 2 deb yozadi - keyin shu suraning audio'sini yuborishi kerak"""
+    if update.message.from_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Faqat admin uchun")
+        return
+    
+    parts = update.message.text.split()
+    if len(parts) != 3:
+        await update.message.reply_text(
+            "Format: /upload <qori> <sura_raqami>\n"
+            "Misol: /upload alafasy 2"
+        )
+        return
+    
+    reciter = parts[1].lower()
+    try:
+        surah = int(parts[2])
+    except:
+        await update.message.reply_text("Sura raqami noto'g'ri")
+        return
+    
+    if reciter not in RECITERS or not (1 <= surah <= 114):
+        await update.message.reply_text("Qori yoki sura noto'g'ri")
+        return
+    
+    ADMIN_STATE["reciter"] = reciter
+    ADMIN_STATE["surah"] = surah
+    await update.message.reply_text(
+        f"✅ Tayyor!\n"
+        f"Endi {RECITERS[reciter]['name']} qorisining "
+        f"{surah}-surasi (audio MP3) yuboring."
+    )
+
+async def handle_admin_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin audio yuborganda file_id ni saqlash"""
+    if update.message.from_user.id != ADMIN_ID:
+        return
+    if not update.message.audio:
+        return
+    if ADMIN_STATE["reciter"] is None:
+        await update.message.reply_text(
+            "Avval /upload buyrug'ini bering.\n"
+            "Misol: /upload alafasy 2"
+        )
+        return
+    
+    reciter = ADMIN_STATE["reciter"]
+    surah = ADMIN_STATE["surah"]
+    file_id = update.message.audio.file_id
+    
+    FILE_IDS[reciter][str(surah)] = file_id
+    save_file_ids(FILE_IDS)
+    
+    await update.message.reply_text(
+        f"✅ Saqlandi!\n\n"
+        f"Qori: {RECITERS[reciter]['name']}\n"
+        f"Sura: {surah}. {SURAHS[surah]['name_uz']}\n\n"
+        f"Endi foydalanuvchilar bu surani bemalol olishadi."
+    )
+    
+    ADMIN_STATE["reciter"] = None
+    ADMIN_STATE["surah"] = None
+
+async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Saqlangan suralar ro'yxati"""
+    if update.message.from_user.id != ADMIN_ID:
+        return
+    
+    text = "📊 *Saqlangan suralar:*\n\n"
+    for reciter_key, reciter_data in RECITERS.items():
+        saved = FILE_IDS.get(reciter_key, {})
+        text += f"🎙️ *{reciter_data['name']}*: {len(saved)} ta\n"
+        if saved:
+            nums = sorted([int(k) for k in saved.keys()])
+            text += f"   Suralar: {', '.join(map(str, nums))}\n"
+        text += "\n"
+    
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+# ============ ASOSIY FUNKSIYALAR ============
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(WELCOME_TEXT, parse_mode="Markdown")
@@ -205,10 +302,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     surah_num, surah = find_surah(text)
     if not surah:
         await update.message.reply_text(
-            "❌ *Sura topilmadi*\n\n"
-            "Iltimos, 1 dan 114 gacha bo'lgan raqam yoki sura nomini yuboring.\n\n"
-            "Masalan: `36` yoki `Yasin`",
-            parse_mode="Markdown"
+            "❌ Sura topilmadi. 1 dan 114 gacha raqam yoki nom yuboring."
         )
         return
     keyboard = [
@@ -246,12 +340,6 @@ async def play_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reciter = RECITERS[reciter_key]
     surah = SURAHS[surah_num]
-    audio_url = reciter["url"].format(surah_num)
-
-    # Avval fayl o'lchamini tekshiramiz (asyncio orqali, blok qilmasdan)
-    loop = asyncio.get_event_loop()
-    file_size = await loop.run_in_executor(None, get_file_size, audio_url)
-    file_size_mb = file_size / 1024 / 1024
 
     caption = (
         f"📖 *{surah_num}. {surah['name_uz']}*\n"
@@ -260,7 +348,25 @@ async def play_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎙️ Qori: {reciter['name']}"
     )
 
-    # Agar fayl kichik bo'lsa - to'g'ridan-to'g'ri audio yuborish
+    # 1. AVVAL FILE_ID BORMI TEKSHIRAMIZ
+    saved_file_id = FILE_IDS.get(reciter_key, {}).get(str(surah_num))
+    if saved_file_id:
+        try:
+            await query.message.reply_audio(
+                audio=saved_file_id,
+                caption=caption,
+                parse_mode="Markdown"
+            )
+            return
+        except Exception as e:
+            logging.error(f"File_id audio xatosi: {e}")
+
+    # 2. FILE_ID YO'Q BO'LSA - URL'dan yuborish
+    audio_url = reciter["url"].format(surah_num)
+    loop = asyncio.get_event_loop()
+    file_size = await loop.run_in_executor(None, get_file_size, audio_url)
+    file_size_mb = file_size / 1024 / 1024
+
     if 0 < file_size <= MAX_AUDIO_SIZE:
         try:
             await query.message.reply_audio(
@@ -272,30 +378,20 @@ async def play_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         except Exception as e:
-            logging.error(f"Audio yuborish xatosi: {e}")
-            # Xato bo'lsa link bilan davom etamiz
+            logging.error(f"URL audio xatosi: {e}")
 
-    # Katta fayl yoki xato - link sifatida yuborish
+    # 3. URL ham ishlamasa - link
     link_text = (
         f"{caption}\n"
         f"💾 Fayl o'lchami: {file_size_mb:.1f} MB\n\n"
-        f"⚠️ *Bu sura juda katta, audio fayl sifatida yuborib bo'lmadi.*\n\n"
-        f"🎧 [Tinglash uchun bosing]({audio_url})\n"
-        f"📥 Yoki linkni telefonda ushlab \"Save link\" qiling"
+        f"⚠️ Bu sura katta. Linkdan tinglang:\n"
+        f"🎧 [Tinglash]({audio_url})"
     )
-
-    try:
-        await query.message.reply_text(
-            link_text,
-            parse_mode="Markdown",
-            disable_web_page_preview=False
-        )
-    except Exception as e:
-        logging.error(f"Link yuborish xatosi: {e}")
-        await query.message.reply_text(
-            f"❌ Xato yuz berdi.\n\n"
-            f"Audio link:\n{audio_url}"
-        )
+    await query.message.reply_text(
+        link_text,
+        parse_mode="Markdown",
+        disable_web_page_preview=False
+    )
 
 async def error_handler(update, context):
     logging.error(f"Xato: {context.error}")
@@ -319,7 +415,10 @@ def main():
     Thread(target=run_web, daemon=True).start()
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("upload", admin_upload))
+    app.add_handler(CommandHandler("list", admin_list))
     app.add_handler(CallbackQueryHandler(play_callback, pattern="^play_"))
+    app.add_handler(MessageHandler(filters.AUDIO, handle_admin_audio))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
     app.run_polling(drop_pending_updates=True)
